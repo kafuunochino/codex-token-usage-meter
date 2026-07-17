@@ -1,0 +1,31 @@
+{
+  "name": "token-usage-meter",
+  "version": "0.1.0+codex.20260717040700",
+  "description": "Live local Codex token, prompt-cache, credit, and USD usage estimates.",
+  "author": {
+    "name": "Token Usage Meter Contributors",
+    "url": "https://github.com/kafuunochino"
+  },
+  "homepage": "https://github.com/kafuunochino/codex-token-usage-meter",
+  "repository": "https://github.com/kafuunochino/codex-token-usage-meter",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Token Usage Meter",
+    "shortDescription": "Live tokens, cache hits, credits, and cost.",
+    "longDescription": "Reads local Codex rollout metadata and shows a five-second floating macOS widget or terminal dashboard for input, cached input, cache hit rate, output, reasoning, official-rate credits, and estimated USD value.",
+    "developerName": "Token Usage Meter Contributors",
+    "category": "Productivity",
+    "websiteURL": "https://github.com/kafuunochino/codex-token-usage-meter",
+    "capabilities": [
+      "Local token usage",
+      "Prompt cache hit rate",
+      "Official Codex rate-card estimates",
+      "Always-on-top macOS widget"
+    ],
+    "defaultPrompt": "Open a floating widget showing my current Codex token usage, cache hit rate, credits, and estimated USD cost.",
+    "brandColor": "#64E463",
+    "screenshots": [
+      "./assets/widget-preview.png"
+    ]
+  }
+}

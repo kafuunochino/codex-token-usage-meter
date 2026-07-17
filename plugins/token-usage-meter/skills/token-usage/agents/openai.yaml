@@ -1,0 +1,4 @@
+interface:
+  display_name: "Token Usage Meter"
+  short_description: "Track Codex tokens, cache hits, and estimated cost"
+  default_prompt: "Use $token-usage to open a floating macOS widget for my live Codex token usage and estimated cost."

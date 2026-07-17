@@ -1,0 +1,20 @@
+{
+  "name": "codex-token-usage-meter",
+  "interface": {
+    "displayName": "Codex Token Usage Meter"
+  },
+  "plugins": [
+    {
+      "name": "token-usage-meter",
+      "source": {
+        "source": "local",
+        "path": "./plugins/token-usage-meter"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
