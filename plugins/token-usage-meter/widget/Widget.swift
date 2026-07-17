@@ -27,7 +27,7 @@ private struct LaunchOptions {
         let pluginRoot = executable
             .deletingLastPathComponent() // MacOS
             .deletingLastPathComponent() // Contents
-            .deletingLastPathComponent() // TokenUsageWidget.app
+            .deletingLastPathComponent() // app bundle
             .deletingLastPathComponent() // assets
         let developmentScript = pluginRoot
             .appendingPathComponent("skills/token-usage/scripts/token_usage.py").path

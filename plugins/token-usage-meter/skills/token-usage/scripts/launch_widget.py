@@ -15,15 +15,29 @@ def main() -> int:
     script_dir = Path(__file__).resolve().parent
     plugin_root = Path(__file__).resolve().parents[3]
     installed_app = Path.home() / "Applications" / "Token Usage Widget.app"
-    bundled_app = plugin_root / "assets" / "TokenUsageWidget.app"
-    app_path = installed_app if installed_app.is_dir() else bundled_app
     usage_script = script_dir / "token_usage.py"
-    if not app_path.is_dir():
-        raise SystemExit(f"Widget app not found: {app_path}")
+    build_script = plugin_root / "widget" / "build_widget.sh"
+    installed_binary = installed_app / "Contents" / "MacOS" / "TokenUsageWidget"
+    source_files = [
+        plugin_root / "widget" / "Widget.swift",
+        plugin_root / "widget" / "Info.plist",
+        usage_script,
+        build_script,
+    ]
+    needs_update = not installed_binary.is_file()
+    if not needs_update:
+        installed_mtime = installed_binary.stat().st_mtime_ns
+        needs_update = any(path.is_file() and path.stat().st_mtime_ns > installed_mtime for path in source_files)
+    if needs_update:
+        if not build_script.is_file():
+            raise SystemExit(f"Widget build script not found: {build_script}")
+        subprocess.run([str(build_script)], check=True)
+    if not installed_app.is_dir():
+        raise SystemExit(f"Widget app not found: {installed_app}")
 
     command = [
         "open",
-        str(app_path),
+        str(installed_app),
         "--args",
         "--script",
         str(usage_script),

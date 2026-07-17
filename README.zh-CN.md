@@ -55,21 +55,15 @@ git clone https://github.com/kafuunochino/codex-token-usage-meter.git
 cd codex-token-usage-meter
 ```
 
-然后直接双击：
-
-```text
-plugins/token-usage-meter/assets/TokenUsageWidget.app
-```
-
-App 已经内置 token 解析脚本，下载后不需要再输入终端命令。如果 macOS 因临时签名阻止首次启动，请按住 Control 点击 App，然后选择“打开”。
-
-如需复制到 `~/Applications`、启用登录 Mac 后自动启动并立即打开：
+构建唯一的 `~/Applications/Token Usage Widget.app`、启用登录 Mac 后自动启动并立即打开：
 
 ```bash
 python3 plugins/token-usage-meter/scripts/install_macos.py
 ```
 
 如果不需要登录自启，可增加 `--no-autostart`。
+
+安装完成后，从“应用程序”或 Spotlight 启动。App 已经内置 token 解析脚本，日常使用不需要再输入终端命令。如果 macOS 因临时签名阻止首次启动，请按住 Control 点击 App，然后选择“打开”。
 
 关闭悬浮窗不会停止 Codex 记录用量。重新打开时会包含关闭期间写入的事件。独立 App 显示整个 Codex 本地安装中所有任务的汇总，而不是某个窗口或任务。如果本地历史很大，首次建立全局索引可能需要一些时间；后续启动会直接复用索引。
 
@@ -121,7 +115,7 @@ cd plugins/token-usage-meter
 ./widget/build_widget.sh
 ```
 
-构建脚本会把 `token_usage.py` 嵌入 App，并应用本地临时签名。
+构建脚本会把 `token_usage.py` 嵌入 App、应用本地临时签名，并更新同一个 `~/Applications/Token Usage Widget.app`，不会在仓库或插件缓存中留下额外 App 副本。
 
 ## 隐私和限制
 

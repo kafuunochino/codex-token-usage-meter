@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import os
 import plistlib
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -38,13 +37,13 @@ def main() -> int:
         raise SystemExit("The standalone widget currently supports macOS only.")
 
     plugin_root = Path(__file__).resolve().parents[1]
-    source_app = plugin_root / "assets" / APP_NAME.replace(" ", "")
-    if not source_app.is_dir():
-        raise SystemExit(f"Built widget not found: {source_app}")
-
     installed_app = Path.home() / "Applications" / APP_NAME
-    installed_app.parent.mkdir(parents=True, exist_ok=True)
-    run(["/usr/bin/ditto", str(source_app), str(installed_app)])
+    build_script = plugin_root / "widget" / "build_widget.sh"
+    if not build_script.is_file():
+        raise SystemExit(f"Widget build script not found: {build_script}")
+    run([str(build_script)])
+    if not installed_app.is_dir():
+        raise SystemExit(f"Widget build did not create: {installed_app}")
 
     if not args.no_autostart:
         launch_agents = Path.home() / "Library" / "LaunchAgents"

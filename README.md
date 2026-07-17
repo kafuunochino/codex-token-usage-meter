@@ -55,21 +55,15 @@ git clone https://github.com/kafuunochino/codex-token-usage-meter.git
 cd codex-token-usage-meter
 ```
 
-Then double-click:
-
-```text
-plugins/token-usage-meter/assets/TokenUsageWidget.app
-```
-
-The app contains its own copy of the token parser, so no terminal command is required after download. If macOS blocks the first launch because the app is ad-hoc signed, Control-click the app and choose **Open**.
-
-To copy the app into `~/Applications`, enable launch at macOS login, and open it immediately:
+Build the only app copy at `~/Applications/Token Usage Widget.app`, enable launch at macOS login, and open it immediately:
 
 ```bash
 python3 plugins/token-usage-meter/scripts/install_macos.py
 ```
 
 Use `--no-autostart` if login launch is not wanted.
+
+After installation, launch it from Applications or Spotlight. The app contains its own copy of the token parser, so no terminal command is required for normal use. If macOS blocks the first launch because the app is ad-hoc signed, Control-click the app and choose **Open**.
 
 Closing the widget does not stop Codex from recording usage. Reopening it includes events written while the widget was not running. The standalone app reports the combined local history of the whole Codex installation, not one window or task. The first global index build can take time when the local rollout history is large; later starts use the saved index.
 
@@ -121,7 +115,7 @@ cd plugins/token-usage-meter
 ./widget/build_widget.sh
 ```
 
-The build script embeds `token_usage.py` into the app bundle and applies an ad-hoc local signature.
+The build script embeds `token_usage.py`, applies an ad-hoc local signature, and updates the same `~/Applications/Token Usage Widget.app`. It does not leave additional app bundles in the repository or plugin cache.
 
 ## Privacy and limitations
 
