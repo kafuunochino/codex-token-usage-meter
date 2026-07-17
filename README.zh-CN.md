@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-这是一个本地优先的 Codex 插件和 macOS 原生悬浮窗，用于查看 token 使用量、提示词缓存效果、账户限制、Codex credits 以及预估美元价值。
+这是一个本地优先的 Codex 插件和 macOS 原生悬浮窗，用于查看 token 使用量、提示词缓存效果、账户限制、Codex credits 以及预估预算消耗（美元）。
 
 ![Codex Token Usage Meter 悬浮窗](plugins/token-usage-meter/assets/widget-preview.png)
 
@@ -69,7 +69,7 @@ python3 plugins/token-usage-meter/scripts/install_macos.py
 
 关闭悬浮窗不会停止 Codex 记录用量。重新打开时会包含关闭期间写入的事件。独立 App 显示整个 Codex 本地安装中所有任务的汇总，而不是某个窗口或任务。如果本地历史很大，首次建立全局索引可能需要一些时间；后续启动会直接复用索引。
 
-点击悬浮窗标题栏右侧的齿轮图标，可以选择界面语言和刷新时间。底部会显示完整年月日、星期、时间及当前刷新间隔。
+点击悬浮窗标题栏右侧的齿轮图标，可以选择界面语言和刷新时间。紧凑的底部信息以“刷新于”开头，并显示完整年月日、星期、时间及当前刷新间隔。
 
 ## 安装为 Codex 插件
 

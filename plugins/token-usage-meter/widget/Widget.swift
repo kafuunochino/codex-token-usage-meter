@@ -74,7 +74,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private let cachedCaption = NSTextField(labelWithString: "Cached / hit")
     private let outputCaption = NSTextField(labelWithString: "Output")
     private let totalCaption = NSTextField(labelWithString: "Total")
-    private let costCaption = NSTextField(labelWithString: "Estimated USD")
+    private let costCaption = NSTextField(labelWithString: "Budget Used (USD)")
     private let inputValue = NSTextField(labelWithString: "—")
     private let cachedValue = NSTextField(labelWithString: "—")
     private let outputValue = NSTextField(labelWithString: "—")
@@ -108,7 +108,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     private func buildPanel() {
         panel = FloatingPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 258),
+            contentRect: NSRect(x: 0, y: 0, width: 336, height: 236),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -190,8 +190,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             [totalCaption, totalValue],
             [costCaption, costValue],
         ])
-        grid.rowSpacing = 9
-        grid.columnSpacing = 22
+        grid.rowSpacing = 7
+        grid.columnSpacing = 18
         grid.column(at: 0).xPlacement = .leading
         grid.column(at: 1).xPlacement = .trailing
 
@@ -202,15 +202,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         let stack = NSStackView(views: [header, modelLabel, grid, footerLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
+        stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         blur.addSubview(stack)
 
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: blur.leadingAnchor, constant: 18),
             stack.trailingAnchor.constraint(equalTo: blur.trailingAnchor, constant: -18),
-            stack.topAnchor.constraint(equalTo: blur.topAnchor, constant: 15),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: blur.bottomAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: blur.topAnchor, constant: 13),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: blur.bottomAnchor, constant: -12),
             header.widthAnchor.constraint(equalTo: stack.widthAnchor),
             modelLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -357,7 +357,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         cachedCaption.stringValue = localized("Cached / hit", "缓存 / 命中率")
         outputCaption.stringValue = localized("Output", "输出")
         totalCaption.stringValue = localized("Total", "总计")
-        costCaption.stringValue = localized("Estimated USD", "估算美元")
+        costCaption.stringValue = localized("Budget Used (USD)", "预算消耗（美元）")
         settingsButton.toolTip = localized("Settings", "设置")
         closeButton.toolTip = localized("Close widget", "关闭小组件")
         updateModelLabel()
@@ -530,8 +530,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         }
         let dateText = formatter.string(from: lastRefreshDate)
         footerLabel.stringValue = localized(
-            "All local history  ·  \(dateText)  ·  \(refreshInterval)s",
-            "全部本地历史  ·  \(dateText)  ·  \(refreshInterval) 秒"
+            "Refreshed at \(dateText)  ·  \(refreshInterval)s",
+            "刷新于 \(dateText)  ·  \(refreshInterval) 秒"
         )
     }
 

@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md)
 
-A local-first Codex plugin and standalone macOS floating widget for inspecting token usage, prompt-cache effectiveness, account limits, Codex credits, and estimated USD value.
+A local-first Codex plugin and standalone macOS floating widget for inspecting token usage, prompt-cache effectiveness, account limits, Codex credits, and estimated budget usage in USD.
 
 ![Codex Token Usage Meter floating widget](plugins/token-usage-meter/assets/widget-preview.png)
 
@@ -69,7 +69,7 @@ After installation, launch it from Applications or Spotlight. The app contains i
 
 Closing the widget does not stop Codex from recording usage. Reopening it includes events written while the widget was not running. The standalone app reports the combined local history of the whole Codex installation, not one window or task. The first global index build can take time when the local rollout history is large; later starts use the saved index.
 
-Click the gear icon in the widget header to choose the language and refresh interval. The footer shows the full date, weekday, time, and active refresh interval.
+Click the gear icon in the widget header to choose the language and refresh interval. The compact footer begins with “Refreshed at” and shows the full date, weekday, time, and active refresh interval.
 
 ## Install as a Codex plugin
 
