@@ -20,9 +20,9 @@ RATE_CARD_URL = "https://help.openai.com/en/articles/20001106-codex-rate-card"
 CREDIT_VALUE_URL = "https://help.openai.com/en/articles/20001147-codex-credits-for-students-terms-of-service"
 RATE_CARD_AS_OF = "2026-07-16"
 DEFAULT_DOLLARS_PER_CREDIT = 0.04  # Official example: 2,500 credits = $100.
-INDEX_SCHEMA_VERSION = 1
+INDEX_SCHEMA_VERSION = 2
 INDEX_DIRECTORY = "token-usage-meter"
-INDEX_FILENAME = "all-index-v1.json"
+INDEX_FILENAME = "all-index-v2.json"
 
 
 @dataclass(frozen=True)
@@ -95,6 +95,10 @@ class FileState:
     buckets: Dict[BucketKey, Usage] = field(default_factory=dict)
     previous_total: Usage = field(default_factory=Usage)
     have_previous_total: bool = False
+    metadata_initialized: bool = False
+    is_subagent: bool = False
+    session_start_ms: Optional[int] = None
+    accounting_started: bool = True
     latest_rate_limits: Optional[Dict[str, Any]] = None
     latest_event_timestamp: str = ""
 
@@ -105,6 +109,10 @@ class FileState:
         self.buckets.clear()
         self.previous_total = Usage()
         self.have_previous_total = False
+        self.metadata_initialized = False
+        self.is_subagent = False
+        self.session_start_ms = None
+        self.accounting_started = True
         self.latest_rate_limits = None
         self.latest_event_timestamp = ""
 
@@ -121,6 +129,14 @@ def state_from_cache(value: Any, default_tier: str) -> Optional[FileState]:
         current_tier=normalize_tier(data.get("current_tier") or default_tier),
         previous_total=usage_from_mapping(data.get("previous_total")),
         have_previous_total=bool(data.get("have_previous_total")),
+        metadata_initialized=bool(data.get("metadata_initialized")),
+        is_subagent=bool(data.get("is_subagent")),
+        session_start_ms=(
+            data.get("session_start_ms") if isinstance(data.get("session_start_ms"), int) else None
+        ),
+        accounting_started=bool(
+            data.get("accounting_started", not bool(data.get("is_subagent")))
+        ),
         latest_rate_limits=copy.deepcopy(data.get("latest_rate_limits"))
         if isinstance(data.get("latest_rate_limits"), dict)
         else None,
@@ -141,6 +157,10 @@ def state_to_cache(state: FileState) -> Dict[str, Any]:
         "current_tier": state.current_tier,
         "previous_total": asdict(state.previous_total),
         "have_previous_total": state.have_previous_total,
+        "metadata_initialized": state.metadata_initialized,
+        "is_subagent": state.is_subagent,
+        "session_start_ms": state.session_start_ms,
+        "accounting_started": state.accounting_started,
         "buckets": [
             {"model": model, "tier": tier, "usage": asdict(usage)}
             for (model, tier), usage in sorted(state.buckets.items())
@@ -237,6 +257,20 @@ def usage_delta(current: Usage, previous: Usage) -> Usage:
     )
 
 
+def uuid_v7_milliseconds(value: Any) -> Optional[int]:
+    """Read the millisecond timestamp prefix from a UUIDv7-like identifier."""
+    compact = str(value or "").replace("-", "")
+    if len(compact) < 12:
+        return None
+    prefix = compact[:12]
+    if any(character not in "0123456789abcdefABCDEF" for character in prefix):
+        return None
+    try:
+        return int(prefix, 16)
+    except ValueError:
+        return None
+
+
 def read_updates(
     path: Path,
     state: FileState,
@@ -267,7 +301,13 @@ def read_updates(
                     break
                 if not any(
                     marker in line
-                    for marker in ("token_count", "turn_context", "thread_settings_applied")
+                    for marker in (
+                        "session_meta",
+                        "task_started",
+                        "token_count",
+                        "turn_context",
+                        "thread_settings_applied",
+                    )
                 ):
                     # Rollout files can contain very large tool and conversation payloads.
                     # Avoid decoding JSON that cannot affect usage accounting.
@@ -281,6 +321,17 @@ def read_updates(
                 payload = payload if isinstance(payload, dict) else {}
                 record_type = record.get("type")
 
+                if record_type == "session_meta" and not state.metadata_initialized:
+                    source = payload.get("source")
+                    state.is_subagent = bool(
+                        payload.get("thread_source") == "subagent"
+                        or (isinstance(source, dict) and "subagent" in source)
+                    )
+                    state.session_start_ms = uuid_v7_milliseconds(payload.get("id"))
+                    state.accounting_started = not state.is_subagent
+                    state.metadata_initialized = True
+                    continue
+
                 if record_type == "turn_context":
                     state.current_model = normalize_model(payload.get("model"))
                     continue
@@ -289,6 +340,20 @@ def read_updates(
                     continue
 
                 event_type = payload.get("type")
+                if (
+                    event_type == "task_started"
+                    and state.is_subagent
+                    and not state.accounting_started
+                ):
+                    turn_start_ms = uuid_v7_milliseconds(payload.get("turn_id"))
+                    if (
+                        state.session_start_ms is not None
+                        and turn_start_ms is not None
+                        and turn_start_ms >= state.session_start_ms
+                    ):
+                        state.accounting_started = True
+                    continue
+
                 if event_type == "thread_settings_applied":
                     settings = payload.get("thread_settings")
                     settings = settings if isinstance(settings, dict) else {}
@@ -303,17 +368,28 @@ def read_updates(
 
                 info = payload.get("info")
                 info = info if isinstance(info, dict) else {}
-                total = usage_from_mapping(info.get("total_token_usage"))
+                total_raw = info.get("total_token_usage")
                 last_raw = info.get("last_token_usage")
-                if isinstance(last_raw, dict):
+                if isinstance(total_raw, dict):
+                    total = usage_from_mapping(total_raw)
+                    if state.have_previous_total:
+                        increment = usage_delta(total, state.previous_total)
+                    else:
+                        increment = total
+                    # Follow cumulative totals through inherited parent history,
+                    # but do not add those inherited deltas to the child file.
+                    state.previous_total = total
+                    state.have_previous_total = True
+                elif isinstance(last_raw, dict):
+                    # Compatibility with older rollout formats that expose only
+                    # the per-event increment.
                     increment = usage_from_mapping(last_raw)
-                elif state.have_previous_total:
-                    increment = usage_delta(total, state.previous_total)
                 else:
-                    increment = total
+                    continue
 
-                state.previous_total = total
-                state.have_previous_total = True
+                if not state.accounting_started:
+                    continue
+
                 tier = state.current_tier
                 if fast_override != "auto":
                     tier = "fast" if fast_override == "on" else "default"

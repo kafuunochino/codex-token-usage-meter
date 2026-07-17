@@ -8,7 +8,8 @@ A local-first Codex plugin and standalone macOS floating widget for inspecting t
 
 ## Features
 
-- Refreshes the floating widget every five seconds.
+- Refreshes the floating widget every five seconds by default, with 1, 5, 10, 30, and 60-second choices in the gear menu.
+- Offers English (default) and Simplified Chinese widget labels, with the preference remembered across launches.
 - Uses compact `K`, `W` (ten-thousand), `M`, and `B` token units while keeping USD amounts unabridged.
 - Shows input, uncached input, cached input, cache-hit rate, output, reasoning output, and total tokens.
 - Groups usage by model and service tier and detects supported Fast-mode multipliers.
@@ -17,13 +18,14 @@ A local-first Codex plugin and standalone macOS floating widget for inspecting t
 - Shows the latest account-limit status when it is available in local rollout metadata.
 - Runs locally and does not require an API key or upload conversation data.
 - Aggregates all local active and archived Codex tasks, so parallel windows cannot make the display jump between sessions.
+- Excludes parent-task history copied into subagent rollouts and ignores repeated cumulative snapshots, preventing duplicate totals.
 - Recovers usage written while the widget was closed by reading new rollout data when reopened.
 - Provides a native always-on-top macOS panel, a terminal dashboard, and JSON output.
 - Remembers the panel position and displays it on every macOS Space.
 
 ## How it works
 
-Codex writes local JSONL rollout metadata under `~/.codex/sessions` and `~/.codex/archived_sessions`. The meter reads `token_count` events from those files and uses per-event increments when present. If only cumulative totals are available, it calculates non-negative deltas between events. Global mode stores a compact index at `~/.codex/token-usage-meter/all-index-v1.json`; it contains numeric usage state and file offsets only, not conversation text. After the initial index build, each refresh reads only newly appended bytes.
+Codex writes local JSONL rollout metadata under `~/.codex/sessions` and `~/.codex/archived_sessions`. The meter reads cumulative `token_count` snapshots and adds only non-negative changes between snapshots, so repeated events are not counted twice. Subagent rollout files can contain a copied prefix of the parent task; the meter tracks that prefix without charging it and begins counting when the child task actually starts. Older logs that expose only per-event increments remain supported. Global mode stores a compact index at `~/.codex/token-usage-meter/all-index-v2.json`; it contains numeric usage state and file offsets only, not conversation text. After the initial index build, each refresh reads only newly appended bytes.
 
 Cached input is treated as a subset of input, and reasoning tokens are treated as a subset of output, so neither is charged twice. Estimated cost is calculated as:
 
@@ -66,6 +68,8 @@ Use `--no-autostart` if login launch is not wanted.
 After installation, launch it from Applications or Spotlight. The app contains its own copy of the token parser, so no terminal command is required for normal use. If macOS blocks the first launch because the app is ad-hoc signed, Control-click the app and choose **Open**.
 
 Closing the widget does not stop Codex from recording usage. Reopening it includes events written while the widget was not running. The standalone app reports the combined local history of the whole Codex installation, not one window or task. The first global index build can take time when the local rollout history is large; later starts use the saved index.
+
+Click the gear icon in the widget header to choose the language and refresh interval. The footer shows the full date, weekday, time, and active refresh interval.
 
 ## Install as a Codex plugin
 

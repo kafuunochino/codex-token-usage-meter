@@ -1,6 +1,6 @@
 {
   "name": "token-usage-meter",
-  "version": "0.1.0+codex.20260717041805",
+  "version": "0.1.0+codex.20260717063342",
   "description": "Live local Codex token, prompt-cache, credit, and USD usage estimates.",
   "author": {
     "name": "Token Usage Meter Contributors",

@@ -11,6 +11,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from token_usage import (  # noqa: E402
     DEFAULT_DOLLARS_PER_CREDIT,
     FileState,
+    INDEX_FILENAME,
     OFFICIAL_RATES,
     Usage,
     aggregate,
@@ -54,7 +55,12 @@ class TokenUsageTests(unittest.TestCase):
                             "output_tokens": 100,
                             "reasoning_output_tokens": 20,
                         },
-                        total={"input_tokens": 1000, "cached_input_tokens": 400, "output_tokens": 100},
+                        total={
+                            "input_tokens": 1000,
+                            "cached_input_tokens": 400,
+                            "output_tokens": 100,
+                            "reasoning_output_tokens": 20,
+                        },
                     ),
                 ],
             )
@@ -114,6 +120,110 @@ class TokenUsageTests(unittest.TestCase):
             self.assertEqual(usage.input_tokens, 150)
             self.assertEqual(usage.cached_input_tokens, 60)
             self.assertEqual(usage.output_tokens, 20)
+
+    def test_duplicate_cumulative_events_are_counted_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rollout.jsonl"
+            total = {"input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 10}
+            self.write_records(
+                path,
+                [
+                    {"type": "turn_context", "payload": {"model": "gpt-5.6-terra"}},
+                    token_event(last=total, total=total),
+                    token_event(last=total, total=total, timestamp="2026-07-17T00:00:02Z"),
+                ],
+            )
+            state = FileState()
+            read_updates(path, state, "default")
+            usage = state.buckets[("gpt-5.6-terra", "default")]
+            self.assertEqual(usage.input_tokens, 100)
+            self.assertEqual(usage.cached_input_tokens, 40)
+            self.assertEqual(usage.output_tokens, 10)
+
+    def test_subagent_inherited_parent_history_is_excluded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rollout.jsonl"
+            inherited = [
+                {
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "019f69f1-217b-7000-a000-000000000001",
+                        "thread_source": "subagent",
+                        "source": {"subagent": {"thread_spawn": {"parent_thread_id": "parent"}}},
+                    },
+                },
+                {"type": "turn_context", "payload": {"model": "gpt-5.6-sol"}},
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_started",
+                        "turn_id": "019f69f0-0000-7000-a000-000000000001",
+                    },
+                },
+                token_event(
+                    last={"input_tokens": 1000, "cached_input_tokens": 600, "output_tokens": 80},
+                    total={"input_tokens": 1000, "cached_input_tokens": 600, "output_tokens": 80},
+                ),
+                token_event(
+                    last={"input_tokens": 500, "cached_input_tokens": 100, "output_tokens": 20},
+                    total={"input_tokens": 1500, "cached_input_tokens": 700, "output_tokens": 100},
+                    timestamp="2026-07-17T00:00:02Z",
+                ),
+            ]
+            self.write_records(path, inherited)
+            state = FileState()
+            read_updates(path, state, "default")
+            self.assertEqual(state.buckets, {})
+
+            actual = [
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_started",
+                        "turn_id": "019f69f1-3000-7000-a000-000000000001",
+                    },
+                },
+                {"type": "turn_context", "payload": {"model": "gpt-5.6-sol"}},
+                token_event(
+                    last={
+                        "input_tokens": 100,
+                        "cached_input_tokens": 70,
+                        "output_tokens": 10,
+                        "reasoning_output_tokens": 2,
+                    },
+                    total={
+                        "input_tokens": 1600,
+                        "cached_input_tokens": 770,
+                        "output_tokens": 110,
+                        "reasoning_output_tokens": 2,
+                    },
+                    timestamp="2026-07-17T00:00:03Z",
+                ),
+                token_event(
+                    last={
+                        "input_tokens": 100,
+                        "cached_input_tokens": 70,
+                        "output_tokens": 10,
+                        "reasoning_output_tokens": 2,
+                    },
+                    total={
+                        "input_tokens": 1600,
+                        "cached_input_tokens": 770,
+                        "output_tokens": 110,
+                        "reasoning_output_tokens": 2,
+                    },
+                    timestamp="2026-07-17T00:00:04Z",
+                ),
+            ]
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write("".join(json.dumps(record) + "\n" for record in actual))
+            read_updates(path, state, "default")
+
+            usage = state.buckets[("gpt-5.6-sol", "default")]
+            self.assertEqual(usage.input_tokens, 100)
+            self.assertEqual(usage.cached_input_tokens, 70)
+            self.assertEqual(usage.output_tokens, 10)
+            self.assertEqual(usage.reasoning_output_tokens, 2)
 
     def test_partial_trailing_line_is_consumed_once_after_completion(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -186,6 +296,10 @@ class TokenUsageTests(unittest.TestCase):
                 current_tier="fast",
                 previous_total=Usage(input_tokens=20, output_tokens=2),
                 have_previous_total=True,
+                metadata_initialized=True,
+                is_subagent=True,
+                session_start_ms=1752710400000,
+                accounting_started=True,
                 latest_event_timestamp="2026-07-17T00:00:01Z",
             )
             state.buckets[("gpt-5.6-sol", "fast")] = Usage(
@@ -197,7 +311,9 @@ class TokenUsageTests(unittest.TestCase):
             loaded = load_all_index(home, "default")
             self.assertEqual(loaded[rollout].offset, 123)
             self.assertEqual(loaded[rollout].buckets[("gpt-5.6-sol", "fast")].total_tokens, 22)
-            cache_text = (home / "token-usage-meter" / "all-index-v1.json").read_text()
+            self.assertTrue(loaded[rollout].is_subagent)
+            self.assertEqual(loaded[rollout].session_start_ms, 1752710400000)
+            cache_text = (home / "token-usage-meter" / INDEX_FILENAME).read_text()
             self.assertNotIn("conversation", cache_text)
 
 

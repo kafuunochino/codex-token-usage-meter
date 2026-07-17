@@ -45,13 +45,36 @@ private final class FloatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+private enum WidgetLanguage: String {
+    case english = "en"
+    case chinese = "zh-Hans"
+}
+
+private let supportedRefreshIntervals = [1, 5, 10, 30, 60]
+
 private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let options = LaunchOptions.parse()
     private var panel: FloatingPanel!
     private var timer: Timer?
     private var refreshInFlight = false
+    private var language: WidgetLanguage = .english
+    private var refreshInterval = 5
+    private var lastRefreshDate: Date?
+    private var lastModelName: String?
+    private var lastErrorMessage: String?
+    private var settingsPopover: NSPopover?
+    private weak var languageSettingLabel: NSTextField?
+    private weak var refreshSettingLabel: NSTextField?
+    private weak var languagePopup: NSPopUpButton?
+    private weak var refreshPopup: NSPopUpButton?
 
+    private let titleLabel = NSTextField(labelWithString: "Codex Usage")
     private let modelLabel = NSTextField(labelWithString: "Connecting to Codex…")
+    private let inputCaption = NSTextField(labelWithString: "Input")
+    private let cachedCaption = NSTextField(labelWithString: "Cached / hit")
+    private let outputCaption = NSTextField(labelWithString: "Output")
+    private let totalCaption = NSTextField(labelWithString: "Total")
+    private let costCaption = NSTextField(labelWithString: "Estimated USD")
     private let inputValue = NSTextField(labelWithString: "—")
     private let cachedValue = NSTextField(labelWithString: "—")
     private let outputValue = NSTextField(labelWithString: "—")
@@ -59,16 +82,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private let costValue = NSTextField(labelWithString: "—")
     private let footerLabel = NSTextField(labelWithString: "Local metadata · refreshes every 5s")
     private let statusDot = NSTextField(labelWithString: "●")
+    private let settingsButton = NSButton()
+    private let closeButton = NSButton()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        loadPreferences()
         buildPanel()
+        applyLocalization()
         restoreOrPlacePanel()
         panel.orderFrontRegardless()
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            self?.refresh()
-        }
+        scheduleRefreshTimer()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -83,7 +108,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     private func buildPanel() {
         panel = FloatingPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 250),
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 258),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -107,24 +132,44 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         blur.layer?.masksToBounds = true
         panel.contentView = blur
 
-        let title = NSTextField(labelWithString: "CODEX USAGE")
-        title.font = .systemFont(ofSize: 12, weight: .semibold)
-        title.textColor = .secondaryLabelColor
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.textColor = .secondaryLabelColor
 
         statusDot.font = .systemFont(ofSize: 10, weight: .bold)
         statusDot.textColor = .systemOrange
 
-        let closeButton = NSButton(title: "×", target: self, action: #selector(closeWidget))
+        settingsButton.target = self
+        settingsButton.action = #selector(showSettings(_:))
+        settingsButton.isBordered = false
+        settingsButton.imagePosition = .imageOnly
+        settingsButton.contentTintColor = .secondaryLabelColor
+        if let image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings") {
+            settingsButton.image = image
+        } else {
+            settingsButton.title = "⚙"
+            settingsButton.font = .systemFont(ofSize: 14, weight: .regular)
+        }
+
+        closeButton.title = "×"
+        closeButton.target = self
+        closeButton.action = #selector(closeWidget)
         closeButton.isBordered = false
         closeButton.font = .systemFont(ofSize: 18, weight: .regular)
         closeButton.contentTintColor = .secondaryLabelColor
-        closeButton.toolTip = "Close widget"
 
         let headerSpacer = NSView()
-        let header = NSStackView(views: [statusDot, title, headerSpacer, closeButton])
+        let header = NSStackView(views: [statusDot, titleLabel, headerSpacer, settingsButton, closeButton])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 7
+        settingsButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            settingsButton.widthAnchor.constraint(equalToConstant: 22),
+            settingsButton.heightAnchor.constraint(equalToConstant: 22),
+            closeButton.widthAnchor.constraint(equalToConstant: 20),
+            closeButton.heightAnchor.constraint(equalToConstant: 22),
+        ])
 
         modelLabel.font = .systemFont(ofSize: 11, weight: .medium)
         modelLabel.textColor = .tertiaryLabelColor
@@ -136,12 +181,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         configureValue(totalValue)
         configureValue(costValue, emphasized: true)
 
+        [inputCaption, cachedCaption, outputCaption, totalCaption, costCaption].forEach(configureCaption)
+
         let grid = NSGridView(views: [
-            [makeCaption("Input"), inputValue],
-            [makeCaption("Cached / hit"), cachedValue],
-            [makeCaption("Output"), outputValue],
-            [makeCaption("Total"), totalValue],
-            [makeCaption("Estimated USD"), costValue],
+            [inputCaption, inputValue],
+            [cachedCaption, cachedValue],
+            [outputCaption, outputValue],
+            [totalCaption, totalValue],
+            [costCaption, costValue],
         ])
         grid.rowSpacing = 9
         grid.columnSpacing = 22
@@ -171,11 +218,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         ])
     }
 
-    private func makeCaption(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
+    private func configureCaption(_ label: NSTextField) {
         label.font = .systemFont(ofSize: 12, weight: .regular)
         label.textColor = .secondaryLabelColor
-        return label
     }
 
     private func configureValue(_ label: NSTextField, emphasized: Bool = false) {
@@ -206,6 +251,159 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     @objc private func closeWidget() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func showSettings(_ sender: NSButton) {
+        if settingsPopover?.isShown == true {
+            settingsPopover?.close()
+            return
+        }
+
+        let languageLabel = NSTextField(labelWithString: "")
+        let refreshLabel = NSTextField(labelWithString: "")
+        [languageLabel, refreshLabel].forEach { label in
+            label.font = .systemFont(ofSize: 12, weight: .medium)
+            label.textColor = .secondaryLabelColor
+        }
+
+        let languageControl = NSPopUpButton(frame: .zero, pullsDown: false)
+        languageControl.target = self
+        languageControl.action = #selector(languageChanged(_:))
+        let refreshControl = NSPopUpButton(frame: .zero, pullsDown: false)
+        refreshControl.target = self
+        refreshControl.action = #selector(refreshIntervalChanged(_:))
+
+        let grid = NSGridView(views: [
+            [languageLabel, languageControl],
+            [refreshLabel, refreshControl],
+        ])
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.rowSpacing = 12
+        grid.columnSpacing = 18
+        grid.column(at: 0).xPlacement = .leading
+        grid.column(at: 1).xPlacement = .fill
+
+        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 108))
+        contentView.addSubview(grid)
+        NSLayoutConstraint.activate([
+            grid.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            grid.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            grid.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
+            grid.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
+            languageControl.widthAnchor.constraint(greaterThanOrEqualToConstant: 118),
+            refreshControl.widthAnchor.constraint(greaterThanOrEqualToConstant: 118),
+        ])
+
+        let controller = NSViewController()
+        controller.view = contentView
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentSize = contentView.frame.size
+        popover.contentViewController = controller
+        settingsPopover = popover
+        languageSettingLabel = languageLabel
+        refreshSettingLabel = refreshLabel
+        languagePopup = languageControl
+        refreshPopup = refreshControl
+        updateSettingsControls()
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+    }
+
+    @objc private func languageChanged(_ sender: NSPopUpButton) {
+        guard let selected = sender.selectedItem?.representedObject as? String,
+              let selectedLanguage = WidgetLanguage(rawValue: selected)
+        else { return }
+        language = selectedLanguage
+        UserDefaults.standard.set(language.rawValue, forKey: "widgetLanguage")
+        applyLocalization()
+        updateSettingsControls()
+    }
+
+    @objc private func refreshIntervalChanged(_ sender: NSPopUpButton) {
+        guard let number = sender.selectedItem?.representedObject as? NSNumber else { return }
+        let seconds = number.intValue
+        guard supportedRefreshIntervals.contains(seconds) else { return }
+        refreshInterval = seconds
+        UserDefaults.standard.set(seconds, forKey: "refreshIntervalSeconds")
+        scheduleRefreshTimer()
+        updateFooter()
+        refresh()
+    }
+
+    private func loadPreferences() {
+        let defaults = UserDefaults.standard
+        if let storedLanguage = defaults.string(forKey: "widgetLanguage"),
+           let selectedLanguage = WidgetLanguage(rawValue: storedLanguage) {
+            language = selectedLanguage
+        } else {
+            language = .english
+        }
+
+        let storedInterval = defaults.integer(forKey: "refreshIntervalSeconds")
+        refreshInterval = supportedRefreshIntervals.contains(storedInterval) ? storedInterval : 5
+    }
+
+    private func scheduleRefreshTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: TimeInterval(refreshInterval), repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
+        timer?.tolerance = min(0.25, TimeInterval(refreshInterval) * 0.1)
+    }
+
+    private func applyLocalization() {
+        titleLabel.stringValue = "Codex Usage"
+        inputCaption.stringValue = localized("Input", "输入")
+        cachedCaption.stringValue = localized("Cached / hit", "缓存 / 命中率")
+        outputCaption.stringValue = localized("Output", "输出")
+        totalCaption.stringValue = localized("Total", "总计")
+        costCaption.stringValue = localized("Estimated USD", "估算美元")
+        settingsButton.toolTip = localized("Settings", "设置")
+        closeButton.toolTip = localized("Close widget", "关闭小组件")
+        updateModelLabel()
+        updateFooter()
+    }
+
+    private func updateSettingsControls() {
+        languageSettingLabel?.stringValue = localized("Language", "语言")
+        refreshSettingLabel?.stringValue = localized("Refresh", "刷新时间")
+
+        if let languagePopup {
+            languagePopup.removeAllItems()
+            [("English", WidgetLanguage.english), ("中文", WidgetLanguage.chinese)].forEach { title, value in
+                languagePopup.addItem(withTitle: title)
+                languagePopup.lastItem?.representedObject = value.rawValue
+            }
+            if let index = languagePopup.itemArray.firstIndex(where: {
+                ($0.representedObject as? String) == language.rawValue
+            }) {
+                languagePopup.selectItem(at: index)
+            }
+        }
+
+        if let refreshPopup {
+            refreshPopup.removeAllItems()
+            supportedRefreshIntervals.forEach { seconds in
+                refreshPopup.addItem(withTitle: refreshIntervalTitle(seconds))
+                refreshPopup.lastItem?.representedObject = NSNumber(value: seconds)
+            }
+            if let index = refreshPopup.itemArray.firstIndex(where: {
+                ($0.representedObject as? NSNumber)?.intValue == refreshInterval
+            }) {
+                refreshPopup.selectItem(at: index)
+            }
+        }
+    }
+
+    private func localized(_ english: String, _ chinese: String) -> String {
+        language == .chinese ? chinese : english
+    }
+
+    private func refreshIntervalTitle(_ seconds: Int) -> String {
+        if language == .chinese {
+            return "\(seconds) 秒"
+        }
+        return seconds == 1 ? "1 second" : "\(seconds) seconds"
     }
 
     private func refresh() {
@@ -271,20 +469,70 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         outputValue.toolTip = NumberFormatter.widgetInteger.string(from: NSNumber(value: output))
         totalValue.toolTip = NumberFormatter.widgetInteger.string(from: NSNumber(value: total))
 
-        var modelText = "ALL CODEX  ·  LIVE"
+        lastModelName = nil
         if let models = json["models"] as? [[String: Any]], models.count == 1, let first = models.first {
-            let model = displayModel(first["model"] as? String ?? "unknown")
-            modelText = "ALL CODEX  ·  \(model)  ·  LIVE"
+            lastModelName = displayModel(first["model"] as? String ?? "unknown")
         }
-        modelLabel.stringValue = modelText
+        lastErrorMessage = nil
+        lastRefreshDate = Date()
+        updateModelLabel()
         statusDot.textColor = .systemGreen
-        footerLabel.stringValue = "All local history  ·  \(DateFormatter.widgetTime.string(from: Date()))  ·  5s"
+        updateFooter()
     }
 
     private func applyError(_ message: String) {
         statusDot.textColor = .systemRed
-        modelLabel.stringValue = "Waiting for Codex usage data"
-        footerLabel.stringValue = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        lastErrorMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        updateModelLabel()
+        updateFooter()
+    }
+
+    private func updateModelLabel() {
+        if lastErrorMessage != nil {
+            modelLabel.stringValue = localized("Waiting for Codex usage data", "正在等待 Codex 用量数据")
+            return
+        }
+        guard lastRefreshDate != nil else {
+            modelLabel.stringValue = localized("Connecting to Codex…", "正在连接 Codex…")
+            return
+        }
+
+        let prefix = localized("ALL CODEX", "全部 CODEX")
+        let live = localized("LIVE", "实时")
+        if let lastModelName {
+            modelLabel.stringValue = "\(prefix)  ·  \(lastModelName)  ·  \(live)"
+        } else {
+            modelLabel.stringValue = "\(prefix)  ·  \(live)"
+        }
+    }
+
+    private func updateFooter() {
+        if let lastErrorMessage {
+            footerLabel.stringValue = lastErrorMessage
+            return
+        }
+        guard let lastRefreshDate else {
+            footerLabel.stringValue = localized(
+                "Local metadata · refreshes every \(refreshInterval)s",
+                "本地元数据 · 每 \(refreshInterval) 秒刷新"
+            )
+            return
+        }
+
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        if language == .chinese {
+            formatter.locale = Locale(identifier: "zh_CN")
+            formatter.dateFormat = "yyyy年M月d日 EEEE HH:mm:ss"
+        } else {
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyy-MM-dd EEEE HH:mm:ss"
+        }
+        let dateText = formatter.string(from: lastRefreshDate)
+        footerLabel.stringValue = localized(
+            "All local history  ·  \(dateText)  ·  \(refreshInterval)s",
+            "全部本地历史  ·  \(dateText)  ·  \(refreshInterval) 秒"
+        )
     }
 
     private func integer(_ value: Any?) -> Int64 {
@@ -361,14 +609,6 @@ private extension NumberFormatter {
         formatter.usesGroupingSeparator = true
         formatter.minimumFractionDigits = 2
         formatter.maximumFractionDigits = 4
-        return formatter
-    }()
-}
-
-private extension DateFormatter {
-    static let widgetTime: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
 }
