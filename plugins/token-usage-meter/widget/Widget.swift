@@ -83,7 +83,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private let footerLabel = NSTextField(labelWithString: "Local metadata · refreshes every 5s")
     private let statusDot = NSTextField(labelWithString: "●")
     private let settingsButton = NSButton()
-    private let closeButton = NSButton()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -100,6 +99,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         timer?.invalidate()
     }
 
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
     func windowDidMove(_ notification: Notification) {
         let origin = panel.frame.origin
         UserDefaults.standard.set(Double(origin.x), forKey: "panelX")
@@ -109,7 +112,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private func buildPanel() {
         panel = FloatingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 336, height: 236),
-            styleMask: [.borderless, .nonactivatingPanel],
+            styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -120,8 +123,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
+        panel.title = "Codex Usage"
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
         panel.becomesKeyOnlyIfNeeded = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
 
         let blur = NSVisualEffectView()
         blur.material = .hudWindow
@@ -150,25 +158,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             settingsButton.font = .systemFont(ofSize: 14, weight: .regular)
         }
 
-        closeButton.title = "×"
-        closeButton.target = self
-        closeButton.action = #selector(closeWidget)
-        closeButton.isBordered = false
-        closeButton.font = .systemFont(ofSize: 18, weight: .regular)
-        closeButton.contentTintColor = .secondaryLabelColor
-
+        let nativeCloseControlSpace = NSView()
         let headerSpacer = NSView()
-        let header = NSStackView(views: [statusDot, titleLabel, headerSpacer, settingsButton, closeButton])
+        let header = NSStackView(views: [nativeCloseControlSpace, statusDot, titleLabel, headerSpacer, settingsButton])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 7
+        nativeCloseControlSpace.translatesAutoresizingMaskIntoConstraints = false
         settingsButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
+            nativeCloseControlSpace.widthAnchor.constraint(equalToConstant: 22),
             settingsButton.widthAnchor.constraint(equalToConstant: 22),
             settingsButton.heightAnchor.constraint(equalToConstant: 22),
-            closeButton.widthAnchor.constraint(equalToConstant: 20),
-            closeButton.heightAnchor.constraint(equalToConstant: 22),
         ])
 
         modelLabel.font = .systemFont(ofSize: 11, weight: .medium)
@@ -247,10 +248,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         } else {
             panel.setFrameOrigin(NSPoint(x: visible.minX + 18, y: visible.minY + 18))
         }
-    }
-
-    @objc private func closeWidget() {
-        NSApp.terminate(nil)
     }
 
     @objc private func showSettings(_ sender: NSButton) {
@@ -359,7 +356,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         totalCaption.stringValue = localized("Total", "总计")
         costCaption.stringValue = localized("Budget Used (USD)", "预算消耗（美元）")
         settingsButton.toolTip = localized("Settings", "设置")
-        closeButton.toolTip = localized("Close widget", "关闭小组件")
+        panel.standardWindowButton(.closeButton)?.toolTip = localized("Close widget", "关闭小组件")
         updateModelLabel()
         updateFooter()
     }
