@@ -21,6 +21,7 @@ from token_usage import (  # noqa: E402
     save_all_index,
     select_files,
     summary_dict,
+    widget_summary_dict,
 )
 
 
@@ -263,6 +264,32 @@ class TokenUsageTests(unittest.TestCase):
         )
         self.assertFalse(data["estimate"]["fully_priced"])
         self.assertIsNone(data["models"][0]["estimated_usd"])
+
+    def test_widget_summary_omits_unbounded_file_and_rate_details(self):
+        state = FileState()
+        state.buckets[("gpt-5.6-sol", "default")] = Usage(
+            input_tokens=100,
+            cached_input_tokens=80,
+            output_tokens=10,
+        )
+        buckets, total, limits, timestamp = aggregate([state])
+        data = summary_dict(
+            "all",
+            [Path(f"/rollout-{index}.jsonl") for index in range(1000)],
+            buckets,
+            total,
+            limits,
+            timestamp,
+            OFFICIAL_RATES,
+            DEFAULT_DOLLARS_PER_CREDIT,
+            "chatgpt",
+        )
+        compact = widget_summary_dict(data)
+        encoded = json.dumps(compact, separators=(",", ":"))
+        self.assertNotIn("files", compact)
+        self.assertNotIn("rate_credits_per_million", encoded)
+        self.assertEqual(compact["tokens"]["total_tokens"], 110)
+        self.assertLess(len(encoded), 2048)
 
     def test_session_id_selects_exact_parallel_rollout(self):
         with tempfile.TemporaryDirectory() as directory:

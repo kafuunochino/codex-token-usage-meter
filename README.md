@@ -20,6 +20,7 @@ A local-first Codex plugin and standalone macOS floating widget for inspecting t
 - Aggregates all local active and archived Codex tasks, so parallel windows cannot make the display jump between sessions.
 - Excludes parent-task history copied into subagent rollouts and ignores repeated cumulative snapshots, preventing duplicate totals.
 - Recovers usage written while the widget was closed by reading new rollout data when reopened.
+- Uses a bounded widget snapshot and drains its helper output while running, so large local histories cannot stall at “Connecting to Codex…”.
 - Provides a native always-on-top macOS panel, a terminal dashboard, and JSON output.
 - Remembers the panel position and displays it on every macOS Space.
 

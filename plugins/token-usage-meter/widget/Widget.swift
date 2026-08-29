@@ -410,34 +410,41 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         guard !refreshInFlight else { return }
         refreshInFlight = true
 
-        let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.executableURL = URL(fileURLWithPath: options.pythonPath)
-        process.arguments = [options.scriptPath, "--scope", "all", "--json"]
-        process.standardOutput = stdout
-        process.standardError = stderr
+        let launchOptions = options
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = URL(fileURLWithPath: launchOptions.pythonPath)
+            process.arguments = [launchOptions.scriptPath, "--scope", "all", "--widget-json"]
+            process.standardOutput = output
+            process.standardError = output
 
-        process.terminationHandler = { [weak self] task in
-            let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
-            let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+            do {
+                try process.run()
+            } catch {
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.refreshInFlight = false
+                    self.applyError(error.localizedDescription)
+                }
+                return
+            }
+
+            // Drain the pipe while the process is still running. Waiting for
+            // termination first can deadlock once the report exceeds the
+            // fixed macOS pipe buffer.
+            let outputData = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.refreshInFlight = false
-                if task.terminationStatus == 0 {
+                if process.terminationStatus == 0 {
                     self.applySnapshot(outputData)
                 } else {
-                    let message = String(data: errorData, encoding: .utf8) ?? "Unable to read usage"
+                    let message = String(data: outputData, encoding: .utf8) ?? "Unable to read usage"
                     self.applyError(message)
                 }
             }
-        }
-
-        do {
-            try process.run()
-        } catch {
-            refreshInFlight = false
-            applyError(error.localizedDescription)
         }
     }
 

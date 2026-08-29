@@ -615,6 +615,23 @@ def summary_dict(
     }
 
 
+def widget_summary_dict(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Return only the fields consumed by the native widget.
+
+    The regular JSON report intentionally includes every rollout path and the
+    full per-model rate breakdown. That output grows with local history and can
+    exceed a macOS pipe buffer. Keep the widget protocol small and stable.
+    """
+    return {
+        "tokens": data["tokens"],
+        "estimate": {
+            "fully_priced": data["estimate"]["fully_priced"],
+            "known_usd": data["estimate"]["known_usd"],
+        },
+        "models": [{"model": row["model"]} for row in data["models"]],
+    }
+
+
 def money(value: float) -> str:
     if value >= 100:
         return f"${value:,.2f}"
@@ -705,6 +722,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--watch", action="store_true", help="refresh continuously")
     parser.add_argument("--interval", type=float, default=5.0, help="watch refresh seconds (default: 5)")
     parser.add_argument("--json", action="store_true", help="emit one JSON snapshot")
+    parser.add_argument(
+        "--widget-json",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--no-cache", action="store_true", help="disable the persistent all-history index")
     parser.add_argument("--no-clear", action="store_true", help="do not clear the terminal between refreshes")
     parser.add_argument("--session-file", type=Path, help="read one explicit rollout JSONL file")
@@ -733,8 +755,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         raise SystemExit("--interval must be greater than zero")
     if args.dollars_per_credit < 0:
         raise SystemExit("--dollars-per-credit must be non-negative")
-    if args.json and args.watch:
-        raise SystemExit("--json cannot be combined with --watch")
+    if args.json and args.widget_json:
+        raise SystemExit("--json and --widget-json cannot be combined")
+    if (args.json or args.widget_json) and args.watch:
+        raise SystemExit("JSON output cannot be combined with --watch")
 
     home = args.codex_home.expanduser()
     default_tier = read_default_tier(home)
@@ -792,9 +816,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                 args.dollars_per_credit,
                 args.billing_mode,
             )
-            output = json.dumps(data, ensure_ascii=False, indent=2) if args.json else render_text(
-                data, args.watch, args.interval
-            )
+            if args.widget_json:
+                output = json.dumps(
+                    widget_summary_dict(data),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            elif args.json:
+                output = json.dumps(data, ensure_ascii=False, indent=2)
+            else:
+                output = render_text(data, args.watch, args.interval)
             if args.watch and not args.no_clear and sys.stdout.isatty():
                 print("\033[2J\033[H", end="")
             print(output, flush=True)
