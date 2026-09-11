@@ -67,6 +67,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private weak var refreshSettingLabel: NSTextField?
     private weak var languagePopup: NSPopUpButton?
     private weak var refreshPopup: NSPopUpButton?
+    private weak var priceStatusLabel: NSTextField?
+    private weak var updatePricesButton: NSButton?
+    private var pricingStatus = "bundled"
+    private var priceCheckedAt: Date?
+    private var unpricedModels: [String] = []
+    private var legacyPriceModels: [String] = []
+    private var priceIsPartial = false
 
     private let titleLabel = NSTextField(labelWithString: "Codex Usage")
     private let modelLabel = NSTextField(labelWithString: "Connecting to Codex…")
@@ -280,13 +287,28 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         grid.column(at: 0).xPlacement = .leading
         grid.column(at: 1).xPlacement = .fill
 
-        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 108))
+        let priceLabel = NSTextField(wrappingLabelWithString: "")
+        priceLabel.font = .systemFont(ofSize: 11)
+        priceLabel.textColor = .secondaryLabelColor
+        let updateButton = NSButton(title: "", target: self, action: #selector(updateOfficialPrices))
+        updateButton.bezelStyle = .rounded
+        let priceStack = NSStackView(views: [priceLabel, updateButton])
+        priceStack.orientation = .vertical
+        priceStack.alignment = .leading
+        priceStack.spacing = 8
+        priceStack.translatesAutoresizingMaskIntoConstraints = false
+        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 190))
         contentView.addSubview(grid)
+        contentView.addSubview(priceStack)
         NSLayoutConstraint.activate([
             grid.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             grid.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
             grid.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
-            grid.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
+            priceStack.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 14),
+            priceStack.leadingAnchor.constraint(equalTo: grid.leadingAnchor),
+            priceStack.trailingAnchor.constraint(equalTo: grid.trailingAnchor),
+            priceStack.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -12),
+            priceLabel.widthAnchor.constraint(equalTo: priceStack.widthAnchor),
             languageControl.widthAnchor.constraint(greaterThanOrEqualToConstant: 118),
             refreshControl.widthAnchor.constraint(greaterThanOrEqualToConstant: 118),
         ])
@@ -302,6 +324,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         refreshSettingLabel = refreshLabel
         languagePopup = languageControl
         refreshPopup = refreshControl
+        priceStatusLabel = priceLabel
+        updatePricesButton = updateButton
         updateSettingsControls()
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
     }
@@ -357,6 +381,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         costCaption.stringValue = localized("Budget Used (USD)", "预算消耗（美元）")
         settingsButton.toolTip = localized("Settings", "设置")
         panel.standardWindowButton(.closeButton)?.toolTip = localized("Close widget", "关闭小组件")
+        updatePriceStatus()
         updateModelLabel()
         updateFooter()
     }
@@ -364,6 +389,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private func updateSettingsControls() {
         languageSettingLabel?.stringValue = localized("Language", "语言")
         refreshSettingLabel?.stringValue = localized("Refresh", "刷新时间")
+        updatePriceStatus()
 
         if let languagePopup {
             languagePopup.removeAllItems()
@@ -403,16 +429,48 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         return seconds == 1 ? "1 second" : "\(seconds) seconds"
     }
 
-    private func refresh() {
+    @objc private func updateOfficialPrices() {
+        refresh(forcePrices: true)
+    }
+
+    private func updatePriceStatus() {
+        let state = pricingStatus == "cached"
+            ? localized("Official prices", "官方价格")
+            : pricingStatus == "stale"
+                ? localized("Cached prices · retry pending", "缓存价格 · 等待重试")
+                : localized("Bundled prices · update pending", "内置价格 · 等待更新")
+        var detail = localized("Auto-update every 6 hours", "每 6 小时自动更新")
+        if let priceCheckedAt {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd HH:mm"
+            detail += "\n" + localized("Checked ", "检查于 ") + formatter.string(from: priceCheckedAt)
+        }
+        priceStatusLabel?.stringValue = state + "\n" + detail
+        updatePricesButton?.title = localized("Update prices now", "立即更新价格")
+        updatePricesButton?.isEnabled = !refreshInFlight
+        let partial = priceIsPartial
+            ? localized("Unpriced models: ", "未计价模型：") + unpricedModels.joined(separator: ", ") + "\n"
+            : ""
+        let legacy = legacyPriceModels.isEmpty ? "" : localized("Legacy rates: ", "历史费率：")
+            + legacyPriceModels.joined(separator: ", ") + "\n"
+        costValue.toolTip = partial + legacy + state + "\n" + detail + "\n" + localized(
+            "Local history at current Codex credit rates; USD assumes $0.04/credit. Not an invoice.",
+            "本地历史按当前 Codex 费率折算；美元按 $0.04/credit 估算，并非账单。"
+        )
+    }
+
+    private func refresh(forcePrices: Bool = false) {
         guard !refreshInFlight else { return }
         refreshInFlight = true
+        updatePricesButton?.isEnabled = false
 
         let launchOptions = options
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let process = Process()
             let output = Pipe()
             process.executableURL = URL(fileURLWithPath: launchOptions.pythonPath)
-            process.arguments = [launchOptions.scriptPath, "--scope", "all", "--widget-json"]
+            process.arguments = ["-B", launchOptions.scriptPath, "--scope", "all", "--widget-json"]
+            if forcePrices { process.arguments?.append("--refresh-prices") }
             process.standardOutput = output
             process.standardError = output
 
@@ -422,6 +480,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.refreshInFlight = false
+                    self.updatePriceStatus()
                     self.applyError(error.localizedDescription)
                 }
                 return
@@ -435,6 +494,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.refreshInFlight = false
+                self.updatePriceStatus()
                 if process.terminationStatus == 0 {
                     self.applySnapshot(outputData)
                 } else {
@@ -462,12 +522,23 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         let hitRate = decimal(tokens["cache_hit_rate_percent"])
         let usd = decimal(estimate["known_usd"])
         let fullyPriced = estimate["fully_priced"] as? Bool ?? false
+        priceIsPartial = !fullyPriced
+        unpricedModels = estimate["unpriced_models"] as? [String] ?? []
+        if let pricing = estimate["pricing"] as? [String: Any] {
+            pricingStatus = pricing["status"] as? String ?? "bundled"
+            let epoch = decimal(pricing["checked_at"])
+            priceCheckedAt = epoch > 0 ? Date(timeIntervalSince1970: epoch) : nil
+            legacyPriceModels = pricing["legacy_models"] as? [String] ?? []
+        }
 
         inputValue.stringValue = formatInteger(input)
         cachedValue.stringValue = "\(formatInteger(cached))  ·  \(String(format: "%.1f%%", hitRate))"
         outputValue.stringValue = formatInteger(output)
         totalValue.stringValue = formatInteger(total)
-        costValue.stringValue = fullyPriced ? "≈ \(formatMoney(usd))" : "≥ \(formatMoney(usd))"
+        costValue.stringValue = fullyPriced ? "≈ \(formatMoney(usd))"
+            : usd > 0 ? "≥ \(formatMoney(usd))" : localized("Unavailable", "暂无价格")
+        costValue.textColor = fullyPriced ? .systemGreen : .systemOrange
+        updatePriceStatus()
         inputValue.toolTip = NumberFormatter.widgetInteger.string(from: NSNumber(value: input))
         cachedValue.toolTip = NumberFormatter.widgetInteger.string(from: NSNumber(value: cached))
         outputValue.toolTip = NumberFormatter.widgetInteger.string(from: NSNumber(value: output))
@@ -503,10 +574,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
         let prefix = localized("ALL CODEX", "全部 CODEX")
         let live = localized("LIVE", "实时")
+        let pricingSuffix = priceIsPartial ? localized("  ·  PARTIAL PRICE", "  ·  价格未完整") : ""
         if let lastModelName {
-            modelLabel.stringValue = "\(prefix)  ·  \(lastModelName)  ·  \(live)"
+            modelLabel.stringValue = "\(prefix)  ·  \(lastModelName)  ·  \(live)\(pricingSuffix)"
         } else {
-            modelLabel.stringValue = "\(prefix)  ·  \(live)"
+            modelLabel.stringValue = "\(prefix)  ·  \(live)\(pricingSuffix)"
         }
     }
 
@@ -578,6 +650,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     private func displayModel(_ model: String) -> String {
         let names = [
+            "gpt-6-astra": "GPT-6 ASTRA",
             "gpt-5.6-sol": "GPT-5.6 SOL",
             "gpt-5.6-terra": "GPT-5.6 TERRA",
             "gpt-5.6-luna": "GPT-5.6 LUNA",

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import re
@@ -15,42 +16,24 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+# The helper is also embedded in a signed app bundle; never add bytecode files
+# beside its bundled pricing module at runtime.
+sys.dont_write_bytecode = True
+from official_pricing import (
+    OFFICIAL_FAST, OFFICIAL_RATES, RATE_CARD_AS_OF, RATE_CARD_URL,
+    Rate, load_pricing, model_slug,
+)
 
-RATE_CARD_URL = "https://help.openai.com/en/articles/20001106-codex-rate-card"
 CREDIT_VALUE_URL = "https://help.openai.com/en/articles/20001147-codex-credits-for-students-terms-of-service"
-RATE_CARD_AS_OF = "2026-07-16"
 DEFAULT_DOLLARS_PER_CREDIT = 0.04  # Official example: 2,500 credits = $100.
-INDEX_SCHEMA_VERSION = 2
+INDEX_SCHEMA_VERSION = 3
 INDEX_DIRECTORY = "token-usage-meter"
-INDEX_FILENAME = "all-index-v2.json"
-
-
-@dataclass(frozen=True)
-class Rate:
-    input: float
-    cached: float
-    output: float
-
-
-# Credits per one million tokens from the official Codex token rate card.
-OFFICIAL_RATES: Dict[str, Rate] = {
-    "gpt-5.6-sol": Rate(125.0, 12.5, 750.0),
-    "gpt-5.6-terra": Rate(62.5, 6.25, 375.0),
-    "gpt-5.6-luna": Rate(25.0, 2.5, 150.0),
-    "gpt-5.5": Rate(125.0, 12.5, 750.0),
-    "gpt-5.5-cyber": Rate(500.0, 50.0, 3000.0),
-    "gpt-5.4": Rate(62.5, 6.25, 375.0),
-    "gpt-5.4-mini": Rate(18.75, 1.875, 113.0),
-    "gpt-5.3-codex": Rate(43.75, 4.375, 350.0),
-    "gpt-5.2": Rate(43.75, 4.375, 350.0),
-    "gpt-image-2.0-image": Rate(200.0, 50.0, 750.0),
-    "gpt-image-2.0-text": Rate(125.0, 31.25, 250.0),
-}
+INDEX_FILENAME = "all-index-v3.json"
 
 MODEL_ALIASES = {
     "codex-auto-review": "gpt-5.3-codex",
-    "gpt-image-2.0-(image)": "gpt-image-2.0-image",
-    "gpt-image-2.0-(text)": "gpt-image-2.0-text",
+    "gpt-image-2.0-image": "gpt-image-2-image",
+    "gpt-image-2.0-text": "gpt-image-2-text",
 }
 
 
@@ -90,6 +73,10 @@ BucketKey = Tuple[str, str]
 @dataclass
 class FileState:
     offset: int = 0
+    file_identity: str = ""
+    checked_mtime_ns: int = 0
+    head_digest: str = ""
+    tail_digest: str = ""
     current_model: str = "unknown"
     current_tier: str = "default"
     buckets: Dict[BucketKey, Usage] = field(default_factory=dict)
@@ -104,6 +91,10 @@ class FileState:
 
     def reset(self, default_tier: str) -> None:
         self.offset = 0
+        self.file_identity = ""
+        self.checked_mtime_ns = 0
+        self.head_digest = ""
+        self.tail_digest = ""
         self.current_model = "unknown"
         self.current_tier = default_tier
         self.buckets.clear()
@@ -125,6 +116,10 @@ def state_from_cache(value: Any, default_tier: str) -> Optional[FileState]:
 
     state = FileState(
         offset=safe_int(data.get("offset")),
+        file_identity=str(data.get("file_identity") or ""),
+        checked_mtime_ns=safe_int(data.get("checked_mtime_ns")),
+        head_digest=str(data.get("head_digest") or ""),
+        tail_digest=str(data.get("tail_digest") or ""),
         current_model=normalize_model(data.get("current_model")),
         current_tier=normalize_tier(data.get("current_tier") or default_tier),
         previous_total=usage_from_mapping(data.get("previous_total")),
@@ -153,6 +148,10 @@ def state_from_cache(value: Any, default_tier: str) -> Optional[FileState]:
 def state_to_cache(state: FileState) -> Dict[str, Any]:
     return {
         "offset": state.offset,
+        "file_identity": state.file_identity,
+        "checked_mtime_ns": state.checked_mtime_ns,
+        "head_digest": state.head_digest,
+        "tail_digest": state.tail_digest,
         "current_model": state.current_model,
         "current_tier": state.current_tier,
         "previous_total": asdict(state.previous_total),
@@ -216,7 +215,7 @@ def save_all_index(home: Path, states: Dict[Path, FileState], default_tier: str)
 
 
 def normalize_model(value: Any) -> str:
-    model = str(value or "unknown").strip().lower().replace("_", "-")
+    model = model_slug(str(value or "unknown"))
     return MODEL_ALIASES.get(model, model)
 
 
@@ -279,10 +278,18 @@ def read_updates(
 ) -> None:
     """Read only new JSONL records and update aggregate metadata."""
     try:
-        size = path.stat().st_size
+        stat = path.stat()
+        size = stat.st_size
+        identity = f"{stat.st_dev}:{stat.st_ino}"
+        changed = size < state.offset
+        if state.offset and not changed:
+            head, tail = file_digests(path, state.offset)
+            changed = (state.file_identity != identity
+                       or head != state.head_digest or tail != state.tail_digest
+                       or (size == state.offset and stat.st_mtime_ns != state.checked_mtime_ns))
     except OSError:
         return
-    if size < state.offset:
+    if changed:
         state.reset(default_tier)
     if state.offset == 0 and not state.buckets and state.current_tier == "default":
         state.current_tier = default_tier
@@ -334,6 +341,8 @@ def read_updates(
 
                 if record_type == "turn_context":
                     state.current_model = normalize_model(payload.get("model"))
+                    if "service_tier" in payload:
+                        state.current_tier = normalize_tier(payload.get("service_tier"))
                     continue
 
                 if record_type != "event_msg":
@@ -374,6 +383,12 @@ def read_updates(
                     total = usage_from_mapping(total_raw)
                     if state.have_previous_total:
                         increment = usage_delta(total, state.previous_total)
+                    elif state.is_subagent:
+                        # Paginated child histories can start with an inherited
+                        # cumulative baseline after task_started. Only the last
+                        # request belongs to this child; seed, don't charge, the
+                        # inherited total (often paired with a zero increment).
+                        increment = usage_from_mapping(last_raw)
                     else:
                         increment = total
                     # Follow cumulative totals through inherited parent history,
@@ -394,7 +409,8 @@ def read_updates(
                 if fast_override != "auto":
                     tier = "fast" if fast_override == "on" else "default"
                 key = (state.current_model, tier)
-                state.buckets.setdefault(key, Usage()).add(increment)
+                if increment.total_tokens:
+                    state.buckets.setdefault(key, Usage()).add(increment)
 
                 rate_limits = payload.get("rate_limits")
                 if isinstance(rate_limits, dict):
@@ -402,8 +418,21 @@ def read_updates(
                 state.latest_event_timestamp = str(record.get("timestamp") or "")
 
             state.offset = handle.tell()
+            state.head_digest, state.tail_digest = file_digests(path, state.offset)
+            state.file_identity = identity
+            state.checked_mtime_ns = stat.st_mtime_ns
     except OSError:
         return
+
+
+def file_digests(path: Path, offset: int) -> Tuple[str, str]:
+    """Check the already-indexed prefix and boundary, without retaining text."""
+    with path.open("rb") as handle:
+        head = handle.read(min(offset, 4096))
+        handle.seek(max(0, offset - 256))
+        tail = handle.read(min(offset, 256))
+    return (hashlib.blake2b(head, digest_size=16).hexdigest(),
+            hashlib.blake2b(tail, digest_size=16).hexdigest())
 
 
 def codex_home() -> Path:
@@ -492,14 +521,10 @@ def aggregate(states: Iterable[FileState]) -> Tuple[Dict[BucketKey, Usage], Usag
     return buckets, total, latest_limits, latest_timestamp
 
 
-def fast_multiplier(model: str, tier: str, billing_mode: str) -> float:
+def fast_multiplier(model: str, tier: str, billing_mode: str, multipliers=None) -> Optional[float]:
     if billing_mode != "chatgpt" or tier != "fast":
         return 1.0
-    if model.startswith("gpt-5.6") or model.startswith("gpt-5.5"):
-        return 2.5
-    if model.startswith("gpt-5.4"):
-        return 2.0
-    return 1.0
+    return (OFFICIAL_FAST if multipliers is None else multipliers).get(model)
 
 
 def bucket_cost(
@@ -508,16 +533,18 @@ def bucket_cost(
     usage: Usage,
     rates: Dict[str, Rate],
     billing_mode: str,
+    multipliers=None,
 ) -> Optional[float]:
     rate = rates.get(model)
-    if rate is None:
+    multiplier = fast_multiplier(model, tier, billing_mode, multipliers)
+    if rate is None or multiplier is None:
         return None
     standard = (
         usage.uncached_input_tokens * rate.input
         + usage.cached_input_tokens * rate.cached
         + usage.output_tokens * rate.output
     ) / 1_000_000.0
-    return standard * fast_multiplier(model, tier, billing_mode)
+    return standard * multiplier
 
 
 def parse_custom_rate(value: str) -> Tuple[str, Rate]:
@@ -544,6 +571,7 @@ def format_reset(epoch: Any) -> str:
 
 def display_model(model: str) -> str:
     names = {
+        "gpt-6-astra": "GPT-6 Astra",
         "gpt-5.6-sol": "GPT-5.6 Sol",
         "gpt-5.6-terra": "GPT-5.6 Terra",
         "gpt-5.6-luna": "GPT-5.6 Luna",
@@ -564,12 +592,14 @@ def summary_dict(
     rates: Dict[str, Rate],
     dollars_per_credit: float,
     billing_mode: str,
+    multipliers=None,
+    pricing=None,
 ) -> Dict[str, Any]:
     rows = []
     known_credits = 0.0
     fully_priced = True
     for (model, tier), usage in sorted(buckets.items()):
-        credits = bucket_cost(model, tier, usage, rates, billing_mode)
+        credits = bucket_cost(model, tier, usage, rates, billing_mode, multipliers)
         if credits is None:
             fully_priced = False
         else:
@@ -586,7 +616,7 @@ def summary_dict(
                     "cache_hit_rate_percent": round(usage.cache_hit_rate, 4),
                 },
                 "rate_credits_per_million": asdict(rate) if rate else None,
-                "fast_multiplier": fast_multiplier(model, tier, billing_mode),
+                "fast_multiplier": fast_multiplier(model, tier, billing_mode, multipliers),
                 "estimated_credits": round(credits, 8) if credits is not None else None,
                 "estimated_usd": round(credits * dollars_per_credit, 8) if credits is not None else None,
             }
@@ -608,8 +638,14 @@ def summary_dict(
             "known_usd": round(known_credits * dollars_per_credit, 8),
             "dollars_per_credit": dollars_per_credit,
             "billing_mode": billing_mode,
-            "rate_card_as_of": RATE_CARD_AS_OF,
+            "rate_card_as_of": (
+                datetime.fromtimestamp(pricing["checked_at"]).astimezone().date().isoformat()
+                if pricing and pricing.get("checked_at") else RATE_CARD_AS_OF
+            ),
             "rate_card_url": RATE_CARD_URL,
+            "unpriced_models": sorted({row["model"] for row in rows if row["estimated_credits"] is None}),
+            "unpriced_tokens": sum(row["tokens"]["total_tokens"] for row in rows if row["estimated_credits"] is None),
+            "pricing": pricing or {"status": "bundled", "checked_at": None, "basis": "current_rate_equivalent"},
         },
         "rate_limits": limits,
     }
@@ -627,8 +663,11 @@ def widget_summary_dict(data: Dict[str, Any]) -> Dict[str, Any]:
         "estimate": {
             "fully_priced": data["estimate"]["fully_priced"],
             "known_usd": data["estimate"]["known_usd"],
+            "unpriced_models": data["estimate"]["unpriced_models"][:5],
+            "unpriced_tokens": data["estimate"]["unpriced_tokens"],
+            "pricing": data["estimate"]["pricing"],
         },
-        "models": [{"model": row["model"]} for row in data["models"]],
+        "models": [{"model": name} for name in sorted({row["model"] for row in data["models"]})[:2]],
     }
 
 
@@ -680,7 +719,7 @@ def render_text(data: Dict[str, Any], watch: bool, interval: float) -> str:
             usage = row["tokens"]
             cost = "N/A" if row["estimated_usd"] is None else money(row["estimated_usd"])
             multiplier = row["fast_multiplier"]
-            suffix = f", x{multiplier:g}" if multiplier != 1.0 else ""
+            suffix = f", x{multiplier:g}" if multiplier not in (None, 1.0) else ""
             lines.append(
                 f"  {display_model(row['model'])} [{row['tier']}{suffix}]  "
                 f"in {usage['input_tokens']:,} / cached {usage['cached_input_tokens']:,} "
@@ -707,7 +746,9 @@ def render_text(data: Dict[str, Any], watch: bool, interval: float) -> str:
     lines.extend(
         [
             "",
-            f"Rate snapshot: {RATE_CARD_AS_OF}  {RATE_CARD_URL}",
+            f"Prices: {estimate['pricing']['status']} · checked {estimate['pricing'].get('checked_at')}  {RATE_CARD_URL}",
+            "Cost basis: current-rate equivalent of local history, not historical invoiced spend.",
+            f"USD conversion: ${estimate['dollars_per_credit']:g}/credit (configurable assumption).",
             "Estimate only: included plan usage may not be an extra cash charge.",
             "Fast-mode multipliers apply only when detected or explicitly selected.",
             "Local metadata only; no conversation content is retained or sent.",
@@ -736,7 +777,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--codex-home", type=Path, default=codex_home(), help="Codex data directory")
     parser.add_argument("--fast", choices=("auto", "on", "off"), default="auto")
-    parser.add_argument("--billing-mode", choices=("chatgpt", "api"), default="chatgpt")
+    parser.add_argument("--billing-mode", choices=("chatgpt",), default="chatgpt",
+                        help="Codex credit estimates; API invoices use separate API pricing")
+    parser.add_argument("--refresh-prices", action="store_true", help="fetch official prices now")
+    parser.add_argument("--offline-prices", action="store_true", help="use cached/bundled prices without network")
     parser.add_argument("--dollars-per-credit", type=float, default=DEFAULT_DOLLARS_PER_CREDIT)
     parser.add_argument(
         "--rate",
@@ -759,12 +803,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         raise SystemExit("--json and --widget-json cannot be combined")
     if (args.json or args.widget_json) and args.watch:
         raise SystemExit("JSON output cannot be combined with --watch")
+    if args.refresh_prices and args.offline_prices:
+        raise SystemExit("--refresh-prices and --offline-prices cannot be combined")
 
     home = args.codex_home.expanduser()
     default_tier = read_default_tier(home)
-    rates = dict(OFFICIAL_RATES)
-    for model, rate in args.rate:
-        rates[model] = rate
 
     effective_session_id = args.session_id
     if not effective_session_id and args.scope == "session" and not args.session_file:
@@ -805,6 +848,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                 save_all_index(home, states, default_tier)
 
             buckets, total, limits, event_timestamp = aggregate(states[path] for path in files if path in states)
+            rates, multipliers, pricing = load_pricing(
+                home, {model for model, tier in buckets}, auto=not args.offline_prices,
+                force=args.refresh_prices,
+            )
+            args.refresh_prices = False
+            for model, rate in args.rate:
+                rates[model] = rate
+            pricing["legacy_models"] = sorted(set(pricing["legacy_models"]) & {m for m, t in buckets})
             data = summary_dict(
                 args.scope,
                 files,
@@ -815,6 +866,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 rates,
                 args.dollars_per_credit,
                 args.billing_mode,
+                multipliers,
+                pricing,
             )
             if args.widget_json:
                 output = json.dumps(

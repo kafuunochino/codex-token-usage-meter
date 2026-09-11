@@ -18,7 +18,9 @@ trap 'rm -rf "$BUILD_ROOT"' EXIT
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$MODULE_CACHE_DIR"
 cp "$SCRIPT_DIR/Info.plist" "$CONTENTS_DIR/Info.plist"
 cp "$USAGE_SCRIPT" "$RESOURCES_DIR/token_usage.py"
+cp "$PLUGIN_DIR/skills/token-usage/scripts/official_pricing.py" "$RESOURCES_DIR/official_pricing.py"
 chmod 644 "$RESOURCES_DIR/token_usage.py"
+chmod 644 "$RESOURCES_DIR/official_pricing.py"
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIR"
 /usr/bin/swiftc \
   -O \

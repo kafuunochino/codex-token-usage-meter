@@ -13,7 +13,7 @@ A local-first Codex plugin and standalone macOS floating widget for inspecting t
 - Uses compact `K`, `W` (ten-thousand), `M`, and `B` token units while keeping USD amounts unabridged.
 - Shows input, uncached input, cached input, cache-hit rate, output, reasoning output, and total tokens.
 - Groups usage by model and service tier and detects supported Fast-mode multipliers.
-- Estimates Codex credits with a bundled snapshot of the official Codex token rate card.
+- Automatically fetches official model token prices and Fast-mode multipliers every six hours, with cached/offline fallback and a manual update button.
 - Converts estimated credits to USD using a configurable dollars-per-credit value.
 - Shows the latest account-limit status when it is available in local rollout metadata.
 - Runs locally and does not require an API key or upload conversation data.
@@ -27,7 +27,7 @@ A local-first Codex plugin and standalone macOS floating widget for inspecting t
 
 ## How it works
 
-Codex writes local JSONL rollout metadata under `~/.codex/sessions` and `~/.codex/archived_sessions`. The meter reads cumulative `token_count` snapshots and adds only non-negative changes between snapshots, so repeated events are not counted twice. Subagent rollout files can contain a copied prefix of the parent task; the meter tracks that prefix without charging it and begins counting when the child task actually starts. Older logs that expose only per-event increments remain supported. Global mode stores a compact index at `~/.codex/token-usage-meter/all-index-v2.json`; it contains numeric usage state and file offsets only, not conversation text. After the initial index build, each refresh reads only newly appended bytes.
+Codex writes local JSONL rollout metadata under `~/.codex/sessions` and `~/.codex/archived_sessions`. The meter reads cumulative `token_count` snapshots and adds only non-negative changes between snapshots, so repeated events are not counted twice. Subagent rollout files can contain a copied prefix or a paginated inherited baseline; neither is charged to the child. Older logs that expose only per-event increments remain supported. Global mode stores a compact index at `~/.codex/token-usage-meter/all-index-v3.json`; it contains usage metadata, file offsets, and change-detection hashes, not conversation text. Upgrading rebuilds this index once from the original logs and preserves the old index. Later refreshes check file identity and small content fingerprints, then read newly appended bytes or re-index changed files.
 
 Cached input is treated as a subset of input, and reasoning tokens are treated as a subset of output, so neither is charged twice. Estimated cost is calculated as:
 
@@ -37,7 +37,11 @@ uncached input × input rate
 + output × output rate
 ```
 
-Rates are credits per one million tokens. The bundled rate snapshot links to the [official Codex rate card](https://help.openai.com/en/articles/20001106-codex-rate-card). USD conversion defaults to `$0.04` per credit, based on the official example of 2,500 credits for $100 in the [Codex credits terms](https://help.openai.com/en/articles/20001147-codex-credits-for-students-terms-of-service).
+Rates are credits per one million tokens, fetched from [official Codex pricing](https://learn.chatgpt.com/docs/pricing#token-rates) and [Fast-mode documentation](https://learn.chatgpt.com/docs/agent-configuration/speed). Model rows are discovered automatically, including newly published models. USD conversion remains a configurable `$0.04` per credit assumption; actual credit purchase prices and discounts depend on the plan or agreement. Codex credits and API invoices are different billing systems; this tool estimates Codex credits only.
+
+Prices update in the background every six hours while the meter runs. An unknown model triggers an earlier check, subject to a 15-minute cooldown. Network or document-parse failures retain the last validated cache and retry after 15 minutes. The cache is `~/.codex/token-usage-meter/official-prices-v1.json`. Offline first launch uses a September 11, 2026 snapshot. Retired models absent from today's table retain their last verified rates and are marked as legacy in JSON. Unpublished models or unknown Fast multipliers keep their token counts, but are excluded from cost; the widget shows an orange partial-price indicator. A publisher layout change can require a parser update; failed parsing is never treated as zero pricing.
+
+The amount is the **current-rate equivalent of local history**. A price update recalculates that equivalent, not the historical amount billed on each date. The gear menu shows the price-check time and an **Update prices now** button; hovering over the amount explains the estimate and any unpriced models.
 
 The displayed dollar amount is an estimate, not an invoice. Usage included in a ChatGPT plan may not create an additional cash charge.
 
@@ -48,7 +52,7 @@ The displayed dollar amount is an estimate, not an invoice. Usage included in a 
 - macOS 13 or later for the native floating widget.
 - Xcode Command Line Tools only when rebuilding the native app from Swift source.
 
-The terminal and JSON reports can run on other platforms when a compatible Codex data directory is available.
+The terminal and JSON reports also run on Linux with a compatible Codex data directory.
 
 ## Quick start: standalone macOS app
 
@@ -114,6 +118,8 @@ Machine-readable JSON:
 python3 plugins/token-usage-meter/skills/token-usage/scripts/token_usage.py --scope session --json
 ```
 
+Add `--refresh-prices` to check official prices immediately, or `--offline-prices` to disable network requests and use cached/bundled prices. `--dollars-per-credit 0.04` overrides the USD conversion assumption. No API key is needed.
+
 ## Rebuild the macOS app
 
 ```bash
@@ -121,11 +127,11 @@ cd plugins/token-usage-meter
 ./widget/build_widget.sh
 ```
 
-The build script embeds `token_usage.py`, applies an ad-hoc local signature, and updates the same `~/Applications/Token Usage Widget.app`. It does not leave additional app bundles in the repository or plugin cache.
+The build script embeds `token_usage.py` and `official_pricing.py`, applies an ad-hoc local signature, and updates the same `~/Applications/Token Usage Widget.app`. It does not leave additional app bundles in the repository or plugin cache.
 
 ## Privacy and limitations
 
-- The meter reads local rollout metadata only; it does not call the OpenAI API.
+- Usage is read from local rollout metadata. Price updates make HTTPS GET requests to fixed public official documentation URLs, without authentication; they do not call the OpenAI model API or transmit local usage or account data.
 - It does not retain or transmit conversation text.
 - Session scope reports one selected task. Use `--scope today` or `--scope all` for aggregation.
 - Unknown models still show token totals, but cost is reported as unavailable instead of guessed.

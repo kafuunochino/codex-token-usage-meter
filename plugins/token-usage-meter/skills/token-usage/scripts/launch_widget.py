@@ -22,6 +22,7 @@ def main() -> int:
         plugin_root / "widget" / "Widget.swift",
         plugin_root / "widget" / "Info.plist",
         usage_script,
+        script_dir / "official_pricing.py",
         build_script,
     ]
     needs_update = not installed_binary.is_file()
@@ -45,7 +46,7 @@ def main() -> int:
         sys.executable,
     ]
     subprocess.run(command, check=True)
-    print("Token Usage Widget launched. Drag to reposition; click × to close.")
+    print("Token Usage Widget launched. Drag to reposition; use the macOS close button to quit.")
     return 0
 
 

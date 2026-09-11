@@ -13,7 +13,7 @@
 - token 数字使用 `K`（千）、`W`（万）、`M`（百万）和 `B`（十亿）简写，金额保持完整显示。
 - 显示输入、未缓存输入、缓存输入、缓存命中率、输出、推理输出和总 token。
 - 按模型和服务层级统计，并识别支持的 Fast 模式倍率。
-- 根据内置的 Codex 官方 token 费率快照估算 credits。
+- 每 6 小时自动获取官方模型价格和 Fast 模式倍率，支持离线缓存以及手动立即更新。
 - 使用可配置的每 credit 美元价值换算预估 USD。
 - 本地 rollout 元数据中包含账户限制时，显示最近的额度状态。
 - 完全在本地运行，不需要 API Key，也不会上传对话数据。
@@ -27,7 +27,7 @@
 
 ## 工作原理
 
-Codex 会在 `~/.codex/sessions` 和 `~/.codex/archived_sessions` 中写入本地 JSONL rollout 元数据。计量器读取累计 `token_count` 快照，只累加相邻快照之间的非负变化，因此重复事件不会再次计数。子代理 rollout 可能带有从父任务复制过来的历史前缀；计量器会跟踪这段前缀但不计入用量，直到子任务真正开始后才累计。仅提供单次增量的旧格式日志仍然兼容。全局模式会在 `~/.codex/token-usage-meter/all-index-v2.json` 保存紧凑索引，其中只有用量数字、模型信息和文件偏移，不包含对话正文。首次索引完成后，每次刷新只读取新追加的内容。
+Codex 会在 `~/.codex/sessions` 和 `~/.codex/archived_sessions` 中写入本地 JSONL rollout 元数据。计量器读取累计 `token_count` 快照，只累加相邻快照之间的非负变化，因此重复事件不会再次计数。子代理 rollout 中复制的父任务历史，以及新版分页历史中的继承基线，都不会计入子任务用量。仅提供单次增量的旧格式日志仍然兼容。全局模式会在 `~/.codex/token-usage-meter/all-index-v3.json` 保存紧凑索引，其中包含用量元数据、文件偏移及变化检测哈希，不包含对话正文。升级时从原始日志重建一次索引并保留旧索引；此后刷新时检查文件标识及少量内容指纹，读取新增内容或重新索引已变更文件。
 
 缓存输入属于输入 token 的子集，推理 token 属于输出 token 的子集，因此不会重复计费。预估费用的计算方式为：
 
@@ -37,7 +37,11 @@ Codex 会在 `~/.codex/sessions` 和 `~/.codex/archived_sessions` 中写入本�
 + 输出 × 输出费率
 ```
 
-费率单位为每一百万 token 对应的 credits。内置费率快照链接到 [Codex 官方费率表](https://help.openai.com/en/articles/20001106-codex-rate-card)。USD 默认按每 credit `$0.04` 换算，依据 [Codex credits 条款](https://help.openai.com/en/articles/20001147-codex-credits-for-students-terms-of-service)中 2,500 credits 等于 100 美元的官方示例。
+费率单位为每一百万 token 对应的 credits，自动读取 [Codex 官方价格](https://learn.chatgpt.com/docs/pricing#token-rates)及 [Fast 模式说明](https://learn.chatgpt.com/docs/agent-configuration/speed)。自动识别官方新发布的模型行。USD 换算仍采用可配置的每 credit `$0.04` 假设值；实际购买价格和优惠取决于套餐或协议。Codex credits 与 API 账单属于不同计价体系，本工具只估算 Codex credits。
+
+程序运行期间每 6 小时在后台检查价格，发现未知模型时提前检查，但两次尝试至少间隔 15 分钟。联网或文档解析失败时保留最后一次有效缓存，15 分钟后重试。缓存位于 `~/.codex/token-usage-meter/official-prices-v1.json`。首次离线启动使用 2026 年 9 月 11 日的内置快照。当前官方表中已移除的历史模型保留最后一次已验证价格，在 JSON 中标注为历史费率。尚未公布价格的模型或未知 Fast 倍率仍计入 token，但不计入金额，窗口以橙色提示价格未完整。如果官方修改页面结构，解析器可能需要升级，解析失败不会被当成零价格。
+
+金额表示**本地历史用量按当前费率折算的价值**。价格变化后会重新折算，不代表每个历史日期的实际账单。齿轮菜单显示价格检查时间，并提供“立即更新价格”；鼠标悬停金额可查看估算口径及未计价模型。
 
 显示的美元金额只是估算值，不是账单。ChatGPT 套餐中已经包含的使用量不一定会产生额外现金费用。
 
@@ -48,7 +52,7 @@ Codex 会在 `~/.codex/sessions` 和 `~/.codex/archived_sessions` 中写入本�
 - 原生悬浮窗需要 macOS 13 或更高版本。
 - 只有从 Swift 源码重新编译 App 时才需要 Xcode Command Line Tools。
 
-如果存在兼容的 Codex 数据目录，终端和 JSON 报告也可以在其他平台运行。
+如果存在兼容的 Codex 数据目录，终端和 JSON 报告也可以在 Linux 上运行。
 
 ## 快速使用：独立 macOS App
 
@@ -114,6 +118,8 @@ python3 plugins/token-usage-meter/skills/token-usage/scripts/token_usage.py --sc
 python3 plugins/token-usage-meter/skills/token-usage/scripts/token_usage.py --scope session --json
 ```
 
+增加 `--refresh-prices` 可立即检查官方价格，`--offline-prices` 可禁用联网并使用缓存或内置价格。`--dollars-per-credit 0.04` 可调整美元换算假设值。不需要 API Key。
+
 ## 重新编译 macOS App
 
 ```bash
@@ -121,11 +127,11 @@ cd plugins/token-usage-meter
 ./widget/build_widget.sh
 ```
 
-构建脚本会把 `token_usage.py` 嵌入 App、应用本地临时签名，并更新同一个 `~/Applications/Token Usage Widget.app`，不会在仓库或插件缓存中留下额外 App 副本。
+构建脚本会把 `token_usage.py` 和 `official_pricing.py` 嵌入 App、应用本地临时签名，并更新同一个 `~/Applications/Token Usage Widget.app`，不会在仓库或插件缓存中留下额外 App 副本。
 
 ## 隐私和限制
 
-- 只读取本地 rollout 元数据，不调用 OpenAI API。
+- 用量只读取本地 rollout 元数据。价格更新仅以 HTTPS GET 请求固定的官方公开文档，无需认证，不调用模型 API，不发送本地用量或账户数据。
 - 不保存或传输对话正文。
 - `session` 范围只显示一个选定任务；如需汇总可使用 `--scope today` 或 `--scope all`。
 - 未知模型仍会显示 token 数量，但费用会显示为不可用，不会猜测价格。

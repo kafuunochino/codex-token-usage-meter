@@ -70,8 +70,8 @@ class TokenUsageTests(unittest.TestCase):
             usage = state.buckets[("gpt-5.6-sol", "default")]
             self.assertEqual(usage.uncached_input_tokens, 600)
             self.assertEqual(usage.total_tokens, 1100)
-            # 600*125 + 400*12.5 + 100*750, divided by one million.
-            self.assertAlmostEqual(bucket_cost("gpt-5.6-sol", "default", usage, OFFICIAL_RATES, "chatgpt"), 0.155)
+            # Current official Sol rate: 600*100 + 400*10 + 100*500.
+            self.assertAlmostEqual(bucket_cost("gpt-5.6-sol", "default", usage, OFFICIAL_RATES, "chatgpt"), 0.114)
 
     def test_fast_mode_uses_official_multiplier(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -95,7 +95,7 @@ class TokenUsageTests(unittest.TestCase):
             state = FileState()
             read_updates(path, state, "default")
             usage = state.buckets[("gpt-5.6-sol", "fast")]
-            standard = (1000 * 125 + 1000 * 12.5 + 200 * 750) / 1_000_000
+            standard = (1000 * 100 + 1000 * 10 + 200 * 500) / 1_000_000
             self.assertAlmostEqual(
                 bucket_cost("gpt-5.6-sol", "fast", usage, OFFICIAL_RATES, "chatgpt"),
                 standard * 2.5,
@@ -246,6 +246,49 @@ class TokenUsageTests(unittest.TestCase):
             second = state.buckets[("gpt-5.6-luna", "default")].total_tokens
             self.assertEqual(first, 12)
             self.assertEqual(second, 12)
+
+    def test_paginated_guardian_baseline_is_not_new_usage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rollout.jsonl"
+            self.write_records(path, [
+                {"type": "session_meta", "payload": {
+                    "id": "01a055a1-1942-7000-a000-000000000001",
+                    "source": {"subagent": {"other": "guardian"}},
+                    "thread_source": "guardian_review", "history_mode": "paginated",
+                }},
+                {"type": "event_msg", "payload": {"type": "task_started",
+                    "turn_id": "01a0604d-ee65-7000-a000-000000000001"}},
+                token_event(total={"input_tokens": 40_000_000, "output_tokens": 30_000},
+                            last={"input_tokens": 0, "output_tokens": 0}),
+                {"type": "turn_context", "payload": {"model": "gpt-6-astra", "service_tier": "fast"}},
+                token_event(total={"input_tokens": 40_000_100, "output_tokens": 30_010},
+                            last={"input_tokens": 100, "output_tokens": 10}),
+            ])
+            state = FileState()
+            read_updates(path, state, "default")
+            self.assertEqual(set(state.buckets), {("gpt-6-astra", "fast")})
+            self.assertEqual(state.buckets[("gpt-6-astra", "fast")].total_tokens, 110)
+
+    def test_astra_fast_and_unpublished_fast_prices(self):
+        usage = Usage(input_tokens=1_000_000, cached_input_tokens=400_000, output_tokens=100_000)
+        self.assertAlmostEqual(bucket_cost("gpt-6-astra", "fast", usage, OFFICIAL_RATES, "chatgpt"), 712.5)
+        self.assertIsNone(bucket_cost("gpt-6-astra", "fast", usage, OFFICIAL_RATES, "chatgpt", {}))
+
+    def test_rewritten_log_invalidates_old_offset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rollout.jsonl"
+            context = {"type": "turn_context", "payload": {"model": "gpt-6-astra"}}
+            self.write_records(path, [context, token_event(total={"input_tokens": 9000})])
+            state = FileState()
+            read_updates(path, state, "default")
+            self.assertEqual(state.buckets[("gpt-6-astra", "default")].input_tokens, 9000)
+            # Replaced history may be longer than the old offset, not truncated.
+            self.write_records(path, [context, token_event(total={"input_tokens": 1000}),
+                                      token_event(total={"input_tokens": 2000})])
+            read_updates(path, state, "default")
+            self.assertEqual(state.buckets[("gpt-6-astra", "default")].input_tokens, 2000)
+            read_updates(path, state, "default")
+            self.assertEqual(state.buckets[("gpt-6-astra", "default")].input_tokens, 2000)
 
     def test_summary_marks_unknown_models_as_partially_priced(self):
         state = FileState()
